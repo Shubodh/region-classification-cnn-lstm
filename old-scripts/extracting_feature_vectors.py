@@ -37,13 +37,13 @@ input_size = 512
 hidden_size = 128
 num_layers = 1
 num_classes = 4 
-batch_size_before = 2000
+batch_size_before = 200
 batch_size = 100
-num_epochs = 2
+num_epochs = 1
 learning_rate = 0.01
 
 
-transform = transforms.Compose([transforms.Resize([224,224]), transforms.RandomHorizontalFlip(),transforms.ToTensor()])
+transform = transforms.Compose([transforms.Resize([224,224]), transforms.ToTensor()])
 
 resnet18 = 'resnet18'
 
@@ -55,26 +55,24 @@ def main():
     model_resnet18 = torchvision.models.resnet18(num_classes=4)
     model_resnet18 = torch.nn.DataParallel(model_resnet18).cuda()
 
-    #checkpoint = torch.load("/home/shubodh/places365_training/places365/trained_models_places10_phase1/resnet18_best_phase1_4classes_unfrozen.pth.tar")
+    #checkpoint = torch.load("/home/shubodh/places365_training/places365/trained_models_places10_phase1/resnet18_best_phase1_4classes_unfrozen.pth.tar") satyajit_models/jun20_rc_final_rapyuta_satyajit.pt
     checkpoint = torch.load("/home/shubodh/places365_training/trained_models/trained_models_rapyuta4_phase2/resnet18_best_phase2_unfrozen_may25.pth.tar")
     start_epoch = checkpoint['epoch']
     best_prec = checkpoint['best_prec1']
 
     model_resnet18.load_state_dict(checkpoint['state_dict'])
-    num_ftrs = model_resnet18.module.fc.in_features
+    #num_ftrs = model_resnet18.module.fc.in_features
     model_resnet18.module.fc = Identity()
     model_resnet18.cuda()
-    print model_resnet18
-    print "num filters = {}".format(num_ftrs)
     cudnn.benchmark = True
     
 
     train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/train_all/', transform=transform)
-    test_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/test_6900_7900/', transform=transform)
+    test_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/test_6900_7900/', transform=transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size_before, sampler = ImbalancedDatasetSampler(train_dataset, csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/train_all/'), shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size_before, shuffle=False, num_workers=4)
     #dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
-    val_loader = DataLoader(test_dataset, batch_size=batch_size_before, shuffle=False, num_workers=4)
+    val_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
 
     
     #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
@@ -86,31 +84,57 @@ def main():
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
+    total_step = len(train_loader)
+    temp_array = []
+    save_array = []
     for epoch in range(num_epochs):
         #adjust_learning_rate(optimizer, epoch)
         #learning rate decay every 30 epochs
         #lr_all = lr_all * (0.1 ** ((epoch - 115) // 30))
-       
-        for i, (images, labels) in enumerate(train_loader):
+
+        for i, (images, labels) in enumerate(val_loader):
 
 
             # train for one epoch
             labels = labels.to(device)
             input_var = torch.autograd.Variable(images)
+            #print "input shape before {}".format(input_var.shape)
             
-            # compute output
+            # compute CNN output
             output_resnet = model_resnet18(input_var)
-            output_resnet = output_resnet.reshape(-1, 20, 512)
-            print "output_resnet shape {}".format(output_resnet.shape)
-            # Forward pass LSTM
+            output_resnet_np = output_resnet.data.cpu().detach().numpy()
+            #print "output shape {}".format(output_resnet_np.shape)
+            temp_array.append(output_resnet_np)
+    
+    temp_array_np = np.array(temp_array)
+    for i in range(temp_array_np.shape[0] - 1):
+        save_array.append(temp_array_np[i])
+    
+    save_array_np = np.array(save_array)
+    save_array_np = save_array_np.reshape(-1,512)
+    np.save("test_input_feature_1july", save_array_np)
+    print "array shape {}".format(save_array_np.shape)
+    # output_resnet = output_resnet.reshape(-1, sequence_length, input_size)
+    
+    # #print "output_resnet shape {}".format(output_resnet.shape)
+           # # Forward pass LSTM
 
-            outputs = model(output_resnet)
-            outputs = outputs.permute(0,2,1)
-            print "outputs shape {}".format(outputs.shape)
-            labels = labels.reshape(-1, 20)
-            loss = criterion(outputs, labels)
+           # outputs = model(output_resnet)
+           # outputs = outputs.permute(0,2,1)
+           # print "outputs shape {}".format(outputs.shape)
+           # labels = labels.reshape(-1, 20)
+           # loss = criterion(outputs, labels)
 
+           # # Backward pass
+           # optimizer.zero_grad()
+           # loss.backward()
+           # 
+           # # Optimizer
+           # optimizer.step()
+           # 
+           # if (i+1) % 1 == 0:
+           #     print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
+           #            .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
 
 
 

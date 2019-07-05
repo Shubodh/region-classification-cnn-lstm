@@ -3,12 +3,11 @@ import os
 import shutil
 import time
 
-import torch 
+import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
-
 from torch.utils.data import Dataset, DataLoader
 
 import torchvision
@@ -20,6 +19,7 @@ import torchvision.models as models
 from sklearn.metrics import confusion_matrix 
 from sklearn.metrics import accuracy_score 
 from sklearn.metrics import classification_report 
+from sklearn import preprocessing
 
 import pandas as pd
 import pdb
@@ -27,53 +27,277 @@ import numpy as np
 from PIL import Image
 
 
+
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cpu')
+
 
 # Hyper-parameters
-sequence_length = 28 #28
-input_size = 28
+sequence_length = 20 #28
+input_size = 512
 hidden_size = 128
 num_layers = 1
-num_classes = 10
+num_classes = 4 
+batch_size_before = 2000
 batch_size = 100
-num_epochs = 2
+num_epochs = 100
 learning_rate = 0.01
 
 
+transform = transforms.Compose(transforms.ToTensor())
 
-model_resnet18 = torchvision.models.resnet18(num_classes=4)
-model_resnet18 = torch.nn.DataParallel(model_resnet18).cuda()
+resnet18 = 'resnet18'
 
-checkpoint = torch.load("/home/shubodh/places365_training/trained_models/trained_models_places10_phase1/resnet18_best_phase1_4classes_unfrozen.pth.tar")
-#    checkpoint = torch.load("/home/shubodh/places365_training/places365/trained_models_rapyuta4_phase2/resnet18_best_phase2_unfrozen_may25.pth.tar")
-start_epoch = checkpoint['epoch']
-best_prec = checkpoint['best_prec1']
+#logger_train = Logger('./logs_unfrozen/train_lr_0.001_0.0001')
+#logger_val = Logger('./logs_unfrozen/val_lr_0.001_0.0001')
 
-model_resnet18.load_state_dict(checkpoint['state_dict'])
-model_resnet18.module.fc = Identity()
-model_resnet18.cuda()
-print model_resnet18
-cudnn.benchmark = True
-abc = torch.randn(1,3,224,224)
-output = model_resnet18(abc)
-print "model_resnet18 after removing last layer {}".format(model_resnet18)
-print "output {}".format(output)
-print "output shape {}".format(output.shape)
+def main():
+    global best_prec1, lr_all, lr_fc
+    
+
+    train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21_2k.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', transform=transform)
+    test_dataset = GetTestDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
+
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size_before, shuffle=True, num_workers=4)
+    #dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
+    val_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+
+#    ab = 0
+#    for images, labels in val_loader:
+#        #output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
+#        #print "output resnet shape {}".format(output_resnet.shape)
+#        #labels = labels.to(device)
+#        print "labels {}".format(labels)
+#        print ab
+#        ab += 1
+    
+#    #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
+#    #criterion = torch.nn.CrossEntropyLoss(weight=w)
+#   
+#
+#    model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+#    
+#    # Loss and optimizer
+#    criterion = nn.CrossEntropyLoss()
+#    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+#    total_step = len(train_loader)
+#    for epoch in range(num_epochs):
+#        #adjust_learning_rate(optimizer, epoch)
+#        #learning rate decay every 30 epochs
+#        #lr_all = lr_all * (0.1 ** ((epoch - 115) // 30))
+#       
+#        for i, (images, labels) in enumerate(train_loader):
+#            # train for one epoch
+#            labels = labels.to(device)
+#            #print "input shape before {}".format(input_var.shape)
+#            
+#            # compute output
+#            output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
+#            print "output_resnet shape train: {}".format(output_resnet.shape)
+#            # Forward pass LSTM
+#            outputs = model(output_resnet)
+#            outputs = outputs.permute(0,2,1)
+#            #print "outputs shape {}".format(outputs.shape)
+#            labels = labels.reshape(-1, 20)
+#            loss = criterion(outputs, labels)
+#
+#            # Backward pass
+#            optimizer.zero_grad()
+#            loss.backward()
+#            
+#            # Optimizer
+#            optimizer.step()
+#            
+#            if (i+1) % 1 == 0:
+#                print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
+#                       .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
+#
+    model_saved = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    #model_saved.load_state_dict(torch.load("./model_many_to_many_lstm.ckpt"))
+    model_saved.load_state_dict(torch.load("./model_many_to_many_lstm_100epochs.ckpt", map_location=lambda storage, loc: storage))
+#    
+    # Test the model
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        abc = 0
+        for images, labels in val_loader:
+            #print "images before {}".format(images)
+            print type(images)
+            images = np.array(images)
+            for i in range(images.shape[0]):
+                images[i] = preprocessing.normalize(images[i,:,:], norm='l2')
+
+            #print "images after {}".format(images)
+            images = torch.from_numpy(images)
+            
+            output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
+            output_resnet = output_resnet.float()
+
+            print "output_resnet  test: {} {}".format(output_resnet.shape, output_resnet)
+            labels = labels.to(device)
+            labels = labels.long()
+            #print "labels shape {}".format(labels.shape)
+            outputs = model_saved(output_resnet)
+            outputs = outputs.permute(0,2,1)
+            labels = labels.reshape(-1, 20)
+            print " outputs {} {} labels shape {}".format(outputs, outputs.shape, labels.shape)
+            _, predicted = torch.max(outputs.data, 1)
+            print "predicted {}".format(predicted)
+            print "labels {}".format(labels)
+            total += (labels.size(0) * labels.size(1))
+            #predicted = predicted.long()
+            correct += (predicted == labels).sum().item()
+            print abc
+            abc += 1
+        print "correct {}".format(correct)
+        print "total {}".format(total)
+        print('Test Accuracy of the model on the 10000 test images: {} %'.format(100 * correct / total)) 
+#
+#    # Save the model checkpoint
+   # torch.save(model.state_dict(), 'model_many_to_many_lstm_100epochs.ckpt')
+
+def train(train_loader, model, criterion, optimizer, epoch):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top3 = AverageMeter()
+
+    # switch to train mode
+    model.train()
+
+    end = time.time()
+    for i, (input, target) in enumerate(train_loader):
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        target = target.cuda(async=True)
+        input_var = torch.autograd.Variable(input)
+        target_var = torch.autograd.Variable(target)
+        # compute output
+        output = model(input_var)
+        loss = criterion(output, target_var)
+        
+        # measure accuracy and record loss
+        prec1, prec3 = accuracy(output.data, target, topk=(1, 3))
+        losses.update(loss.item(), input.size(0))
+        top1.update(prec1.item(), input.size(0))
+        top3.update(prec3.item(), input.size(0))
+        
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % 10 == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                  'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
+                   epoch, i, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses, top1=top1, top3=top3))
+
+        
+        
+    # TENSORBOARD LOGGING
+    # 1. Log scalar values (scalar summary)
+    info = { 'loss': losses.avg, 'accuracy': top1.avg }
+
+    for tag, value in info.items():
+        logger_train.scalar_summary(tag, value, epoch)
+
+    # 2. Log values and gradients of the parameters (histogram summary)
+    for tag, value in model.named_parameters():
+        tag = tag.replace('.', '/')
+        logger_train.histo_summary(tag, value.data.cpu().numpy(), epoch)
+        logger_train.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch)
+
+    # 3. Log training images (image summary)
+    info = { 'train_images': input_var.view(-1, 28, 28)[:10].cpu().numpy() }
+
+    for tag, input_var in info.items():
+        logger_train.image_summary(tag, input_var, epoch) 
 
 
-transform = transforms.Compose([transforms.Resize([224,224]), transforms.RandomHorizontalFlip(),transforms.ToTensor()])
+def validate(val_loader, model, criterion, epoch):
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top3 = AverageMeter()
+    true_list = np.array([])
+    pred_list = np.array([])
+    # switch to evaluate mode
+    model.eval()
 
-# Rapyuta Dataset
-train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/train_all/', transform=transform)
+    end = time.time()
+    with torch.no_grad():
+        for i, (input, target) in enumerate(val_loader):
+            target = target.cuda(async=True)
+            input_var = torch.autograd.Variable(input)
+            target_var = torch.autograd.Variable(target)
+            
+            target_ew = torch.autograd.Variable(target.squeeze()).cuda()
+            #print(target_ew.size())
+            # compute output
+            output = model(input_var)
+            loss = criterion(output, target_var)
+            # adding custom validation metrics from sklearn
+            target_ew_np = np.asarray(target_ew.data.cpu().numpy())
+            #print target_ew_np
+            true_list = np.append(true_list, target_ew_np)
+            #print true_list
+            _, pred_label_value = torch.max(output, 1)
+            #print(pred_label_value.size())
+            pred_list = np.append(pred_list, pred_label_value.cpu().numpy())
+            #print(pred_list)
+#            print("the length of pred list is {pred}".format(pred = len(pred_list)))
+            # measure accuracy and record loss
+            prec1, prec3 = accuracy(output.data, target, topk=(1, 3))
+            losses.update(loss.item(), input.size(0))
+            top1.update(prec1.item(), input.size(0))
+            top3.update(prec3.item(), input.size(0))
+            
+                        
 
-test_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/test_6900_7900/', transform=transform)
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-# Data loader
+            if i % 10  == 0:
+                print('Test: [{0}/{1}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                      'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
+                       i, len(val_loader), batch_time=batch_time, loss=losses,
+                       top1=top1, top3=top3))
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler = ImbalancedDatasetSampler(train_dataset, csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/train_all/'), shuffle=True, num_workers=4) #Shuffle?
 
-val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+
+    # TENSORBOARD LOGGING
+    # 1. Log scalar values (scalar summary)
+    info = { 'loss': losses.avg, 'accuracy': top1.avg }
+
+    for tag, value in info.items():
+        logger_val.scalar_summary(tag, value, epoch)
+
+    print(' * Prec@1 {top1.avg:.3f} Prec@3 {top3.avg:.3f}'
+          .format(top1=top1, top3=top3))
+   # accuracy score, confusion_matrix and classification report from sklearn
+    print('Confusion matrix: ')
+    print confusion_matrix(true_list, pred_list)
+    print('Accuracy score: ', accuracy_score(true_list, pred_list))
+    print(classification_report(true_list,pred_list))
+
+    return top1.avg
 
 
 class Identity(nn.Module):
@@ -105,72 +329,173 @@ class LSTM(nn.Module):
         out = self.fc(out[:, :, :]) 
         return out
 
-model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
-print model.parameters()
-# Loss and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
 
-# Train the model
-total_step = len(train_loader)
-for epoch in range(num_epochs):
-    for i, (images, labels) in enumerate(train_loader):
-        #print ('images before reshaping {}'.format(images.shape)) #[100, 1, 28, 28]
-        images = images.reshape(-1, sequence_length, input_size).to(device)
-        labels = labels.to(device)
-        #print ('images after reshaping {}'.format(images.shape)) #[100, 28, 28]
-        #print ('labels size {}'.format(labels.shape))
-        
-        # Forward pass
-        outputs = model(images)
-        outputs = outputs.permute(0,2,1)
-        #print outputs.shape
-        #print labels.shape
-        
-        labels = labels.repeat(28,1)
-        labels = labels.permute(1,0)
-        #print labels.shape
-        # k-dimensional loss (k=1 in this case of many to many, k=0 in many to one) 
-        loss = criterion(outputs, labels)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # Optimizer
-        optimizer.step()
-        
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
-                   .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
 
-# Test the model
-with torch.no_grad():
-    correct = 0
-    total = 0
-    for images, labels in val_loader:
-        images = images.reshape(-1, sequence_length, input_size).to(device)
-        labels = labels.to(device)
-         
-        #labels = labels.repeat(10,1)
-        #labels = labels.permute(1,0)
-         
-        #print labels.shape
-        outputs = model(images)
-        #print outputs[:,-1].shape
-        outputs = outputs.permute(0,2,1)
-        #print outputs.shape
-        #print labels.shape
-        
-        labels = labels.repeat(28,1)
-        labels = labels.permute(1,0)
-        
-        _, predicted = torch.max(outputs.data, 1)
-        total += (labels.size(0) * labels.size(1))
-        correct += (predicted == labels).sum().item()
-    print "correct {}".format(correct)
-    print "total {}".format(total)
-    print('Test Accuracy of the model on the 10000 test images: {} %'.format(100 * correct / total)) 
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
-# Save the model checkpoint
-torch.save(model.state_dict(), 'model_many_to_many_lstm.ckpt')
+
+
+class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
+    """Samples elements randomly from a given list of indices for imbalanced dataset
+    Arguments:
+        indices (list, optional): a list of indices
+        num_samples (int, optional): number of samples to draw
+    """
+
+    def __init__(self, dataset, csv_file, root_dir, indices=None, num_samples=None):
+        #print('here')        
+        self.root_dir = root_dir
+        self.transform = transform
+        self.landmarks = pd.read_csv(csv_file)
+        # if indices is not provided, 
+        # all elements in the dataset will be considered
+        self.indices = list(range(len(dataset))) \
+            if indices is None else indices
+            
+        # if num_samples is not provided, 
+        # draw `len(indices)` samples in each iteration
+        self.num_samples = len(self.indices) \
+            if num_samples is None else num_samples
+            
+        # distribution of classes in the dataset 
+        label_to_count = {}
+        for idx in self.indices:
+            label = self._get_label(dataset, idx)
+            if label in label_to_count:
+                label_to_count[label] += 1
+            else:
+                label_to_count[label] = 1
+                
+        # weight for each sample
+        weights = [1.0 / label_to_count[self._get_label(dataset, idx)]
+                   for idx in self.indices]
+        self.weights = torch.DoubleTensor(weights)
+        #print('here111')
+        
+        
+    def _get_label(self, dataset, idx):
+        dataset_type = type(dataset)
+        if dataset_type is torchvision.datasets.MNIST:
+            return dataset.train_labels[idx].item()
+        elif dataset_type is torchvision.datasets.ImageFolder:
+            return dataset.imgs[idx][1]
+        else:
+            img_name_A = os.path.join('/scratch/shubodh/places365/rapyuta4_classes/train_all/', self.landmarks.iloc[idx, 0])
+            label = self.landmarks.iloc[idx, 1] 
+            #print(img_name_A, label)
+            return (label)
+                
+    def __iter__(self):
+        return (self.indices[i] for i in torch.multinomial(
+            self.weights, self.num_samples, replacement=True))
+
+    def __len__(self):
+        return self.num_samples
+
+class GetDataset(Dataset):
+    def __init__(self, csv_file, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.landmarks = pd.read_csv(csv_file)
+        self.inp = np.load(root_dir + 'train_feature_vector_1.npy')
+
+    def __len__(self):
+        return len(self.landmarks)
+
+    def __getitem__(self, idx):
+        #img_name_A = os.path.join(self.root_dir, self.landmarks.iloc[idx, 0])
+        label = self.landmarks.iloc[idx, 1] 
+        #print(self.landmarks.iloc[idx, 0], label)
+        #time.sleep(1)
+        return (self.inp[idx], label)
+
+class GetTestDataset(Dataset):
+    def __init__(self, csv_file, root_dir, sequence_length, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.landmarks = pd.read_csv(csv_file)
+        self.sequence_length = sequence_length
+        self.inpa = np.load(root_dir + 'test_input_feature_8400X20X512_1july.npy')
+
+    def __len__(self):
+        return (len(self.landmarks) - self.sequence_length + 1)
+
+    def __getitem__(self, idx):
+       # img_name_A = os.path.join(self.root_dir, self.landmarks.iloc[idx, 0])
+        label = self.landmarks.iloc[idx, 1] 
+        label_all = self.landmarks.iloc[:,1]
+        label_all_np = np.array(label_all)
+        #print label_all_np.shape
+        new_len = len(self.landmarks) - self.sequence_length + 1
+       
+        label_all_seq = np.zeros((new_len,20))
+
+        for i in range(new_len):
+            label_all_seq[i] = label_all_np[i:i+20]
+
+        #print "labels shape {}, input shape{}".format(label_all_seq.shape,self.inpa.shape)
+        #print "labels indi shape {}, input shape{}".format(label_all_seq[idx].shape,self.inpa[idx].shape)
+        #print "labels {}, input {}".format(label_all_seq[idx],self.inpa[idx])
+        #print(self.inpa[idx], label)
+        #print(self.landmarks.iloc[idx, 0], label)
+        #time.sleep(1)
+        #print "idx {} name {}".format(idx,self.landmarks.iloc[idx, 0])
+        return (self.inpa[idx], label_all_seq[idx])
+
+def adjust_learning_rate(optimizer, epoch):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr_all = lr_all * (0.1 ** ((epoch - 117) // 30))
+#        for param_group in optimizer.param_groups:
+#            param_group['lr'] = lr
+
+
+
+def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    torch.save(state, filename + '_latest.pth.tar')
+    if is_best:
+        shutil.copyfile(filename + '_latest.pth.tar', filename + '_best.pth.tar')
+ 
+def calculateTotalLoss(targ, preda):
+   
+    w = torch.Tensor([0.2,0.6,1.8,0.6]).cuda()
+    criterion = torch.nn.CrossEntropyLoss(weight=w)
+    return criterion(preda,targ)
+    
+    
+
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].view(-1).float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
+
+
+#write object for tensorboard.
+#writer = SummaryWriter('/home/tourani/Desktop/region-classification-matterport-pytorch/lf')
+
+#MPObj = torch.load('/scratch/satyajittourani/saved_models_raputa_resize/latest_saved_state_005.pt').cuda()
+if __name__ == '__main__':
+    main()
