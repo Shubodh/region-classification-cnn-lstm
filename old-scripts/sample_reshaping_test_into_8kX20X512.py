@@ -1,7 +1,7 @@
 import numpy as np
 
 seq_steps = 20
-a = np.load("./npy/test_input_feature_8419X512_1july.npy", allow_pickle=True)
+a = np.load("./train_input_feature_21219x512_satyajit_model.npy", allow_pickle=True)
 #a = np.arange(100)
 n = a.shape
 print "n shape {}".format(n) 
@@ -21,4 +21,4 @@ print b.shape
 #print c.shape
 #c = c.reshape(-1,512)
 #print c.shape
-#np.save("test_input_feature_8400X20X512_1july.npy",b)
+np.save("train_input_feature_21200x20x512_satyajit_model.npy",b)

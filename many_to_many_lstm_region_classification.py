@@ -2,6 +2,7 @@ import argparse
 import os
 import shutil
 import time
+import sys
 
 import torch
 import torch.nn as nn
@@ -26,7 +27,7 @@ import pdb
 import numpy as np
 from PIL import Image
 
-
+from scipy.stats import mode 
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -39,9 +40,8 @@ input_size = 512
 hidden_size = 128
 num_layers = 1
 num_classes = 4 
-batch_size_before = 2000
 batch_size = 100
-num_epochs = 100
+num_epochs = 5
 learning_rate = 0.01
 
 
@@ -56,12 +56,14 @@ def main():
     global best_prec1, lr_all, lr_fc
     
 
-    train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21_2k.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', transform=transform)
+    train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21219.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
+    test_temp_dataset = GetTempTestDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
     test_dataset = GetTestDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
 
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size_before, shuffle=True, num_workers=4)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, sampler= ImbalancedDatasetSampler(train_dataset, csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21219.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length), shuffle=False, num_workers=4)
     #dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
-    val_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+    val_temp_loader = DataLoader(dataset=test_temp_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    val_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
 #    ab = 0
 #    for images, labels in val_loader:
@@ -72,91 +74,120 @@ def main():
 #        print ab
 #        ab += 1
     
-#    #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
-#    #criterion = torch.nn.CrossEntropyLoss(weight=w)
-#   
+    #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
+    #criterion = torch.nn.CrossEntropyLoss(weight=w)
+   
 #
-#    model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
-#    
-#    # Loss and optimizer
-#    criterion = nn.CrossEntropyLoss()
-#    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-#    total_step = len(train_loader)
-#    for epoch in range(num_epochs):
-#        #adjust_learning_rate(optimizer, epoch)
-#        #learning rate decay every 30 epochs
-#        #lr_all = lr_all * (0.1 ** ((epoch - 115) // 30))
-#       
-#        for i, (images, labels) in enumerate(train_loader):
-#            # train for one epoch
-#            labels = labels.to(device)
-#            #print "input shape before {}".format(input_var.shape)
-#            
-#            # compute output
-#            output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
-#            print "output_resnet shape train: {}".format(output_resnet.shape)
-#            # Forward pass LSTM
-#            outputs = model(output_resnet)
-#            outputs = outputs.permute(0,2,1)
-#            #print "outputs shape {}".format(outputs.shape)
-#            labels = labels.reshape(-1, 20)
-#            loss = criterion(outputs, labels)
-#
-#            # Backward pass
-#            optimizer.zero_grad()
-#            loss.backward()
-#            
-#            # Optimizer
-#            optimizer.step()
-#            
-#            if (i+1) % 1 == 0:
-#                print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
-#                       .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
-#
-    model_saved = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    
+    # Loss and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    total_step = len(train_loader)
+    for epoch in range(num_epochs):
+        #adjust_learning_rate(optimizer, epoch)
+        #learning rate decay every 30 epochs
+        #lr_all = lr_all * (0.1 ** ((epoch - 115) // 30))
+       
+        for i, (images, labels) in enumerate(train_loader):
+            # train for one epoch
+            labels = labels.to(device)
+            labels = labels.long()
+            #print "input shape before {}".format(input_var.shape)
+            
+            # compute output
+            output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
+            output_resnet = output_resnet.float()
+            print "output_resnet shape train: {}".format(output_resnet.shape)
+            # Forward pass LSTM
+            outputs = model(output_resnet)
+            outputs = outputs.permute(0,2,1)
+            #print "outputs shape {}".format(outputs.shape)
+            loss = criterion(outputs, labels)
+
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            
+            # Optimizer
+            optimizer.step()
+            
+            if (i+1) % 1 == 0:
+                print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
+                       .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
+    #model_saved = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
     #model_saved.load_state_dict(torch.load("./model_many_to_many_lstm.ckpt"))
-    model_saved.load_state_dict(torch.load("./model_many_to_many_lstm_100epochs.ckpt", map_location=lambda storage, loc: storage))
+    #model_saved.load_state_dict(torch.load("./model_many_to_many_lstm_5epochs_satya.ckpt", map_location=lambda storage, loc: storage))
 #    
     # Test the model
     with torch.no_grad():
-        correct = 0
-        total = 0
-        abc = 0
-        for images, labels in val_loader:
-            #print "images before {}".format(images)
-            print type(images)
-            images = np.array(images)
-            for i in range(images.shape[0]):
-                images[i] = preprocessing.normalize(images[i,:,:], norm='l2')
-
-            #print "images after {}".format(images)
-            images = torch.from_numpy(images)
-            
+        output_vector = np.zeros([8400,20,4])
+        out_i = 0
+        for images, labels in val_temp_loader:
+            #images = np.array(images)
+            #for i in range(images.shape[0]):
+            #    images[i] = preprocessing.normalize(images[i,:,:], norm='l2')
+            #images = torch.from_numpy(images)
             output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
             output_resnet = output_resnet.float()
-
-            print "output_resnet  test: {} {}".format(output_resnet.shape, output_resnet)
+            outputs = model(output_resnet)
+            
+            outputs_np = outputs.data.cpu().numpy()
+            output_vector[out_i*100:((out_i+1)*100),:,:] = outputs_np[:,:,:]
+            #print " output vector {}shape {} ".format(output_vector, output_vector.shape)
+            print out_i
+            out_i += 1
+            
+        output_vector_indi = np.zeros([8419,20,4])
+        for i in range(output_vector_indi.shape[0]):
+            for k in range(output_vector_indi.shape[1]):
+                if ((i - (19 - k)) >= 0 and (i - (19 - k)) < 8400):
+                    output_vector_indi[i,k,:] = output_vector[i-(19-k),19-k,:]
+        #DEBUG: the matrix should look like a parallelogram: rectange with top right corner pulled upwards
+        #print "output_vector_indi starting{}".format(output_vector_indi[0:2,:,:])
+        #print "output_vector_indi ending{}".format(output_vector_indi[8417:8419,:,:])
+        
+        output_vector_final = np.average(output_vector_indi, axis=1)
+        print "output_vector_final {}".format(output_vector_final.shape)
+       
+        output_final = torch.from_numpy(output_vector_final)
+        output_final = output_final.to(device)
+        correct = 0
+        total = 0
+        pre_i = 0
+        true_list = np.array([])
+        pred_list = np.array([])
+        for images, labels in val_loader:
+            _, predicted = torch.max(output_final.data, 1)
+            #print "predicted {}".format(predicted)
+            #print "labels {}".format(labels)
             labels = labels.to(device)
             labels = labels.long()
-            #print "labels shape {}".format(labels.shape)
-            outputs = model_saved(output_resnet)
-            outputs = outputs.permute(0,2,1)
-            labels = labels.reshape(-1, 20)
-            print " outputs {} {} labels shape {}".format(outputs, outputs.shape, labels.shape)
-            _, predicted = torch.max(outputs.data, 1)
-            print "predicted {}".format(predicted)
-            print "labels {}".format(labels)
-            total += (labels.size(0) * labels.size(1))
+            total += (labels.size(0))
             #predicted = predicted.long()
-            correct += (predicted == labels).sum().item()
-            print abc
-            abc += 1
+            correct += (predicted[pre_i*100:((pre_i+1)*100)] == labels).sum().item()
+
+            labels_temp = np.asarray(labels.data.cpu().numpy())
+            true_list = np.append(true_list, labels_temp)
+            pred_list = np.append(pred_list, predicted[pre_i*100:((pre_i+1)*100)].cpu().numpy())
+
+            pre_i += 1
+
+        torch.save(model.state_dict(), 'model_many_to_many_lstm_5epochs_finale.ckpt')
+
         print "correct {}".format(correct)
         print "total {}".format(total)
-        print('Test Accuracy of the model on the 10000 test images: {} %'.format(100 * correct / total)) 
+        print('Test Accuracy of the model on the test images: {} %'.format(100 * correct / total)) 
+
+        print('Confusion matrix: ')
+        print confusion_matrix(true_list, pred_list)
+        print('Accuracy score: ', accuracy_score(true_list, pred_list))
+        print(classification_report(true_list,pred_list))
+
+
 #
 #    # Save the model checkpoint
-   # torch.save(model.state_dict(), 'model_many_to_many_lstm_100epochs.ckpt')
+   # torch.save(model.state_dict(), 'model_many_to_many_lstm_5epochs_finale.ckpt')
 
 def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
@@ -355,11 +386,14 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         num_samples (int, optional): number of samples to draw
     """
 
-    def __init__(self, dataset, csv_file, root_dir, indices=None, num_samples=None):
+    def __init__(self, dataset, csv_file, root_dir, sequence_length, indices=None, num_samples=None):
         #print('here')        
         self.root_dir = root_dir
         self.transform = transform
         self.landmarks = pd.read_csv(csv_file)
+        self.sequence_length = sequence_length
+
+
         # if indices is not provided, 
         # all elements in the dataset will be considered
         self.indices = list(range(len(dataset))) \
@@ -393,10 +427,26 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         elif dataset_type is torchvision.datasets.ImageFolder:
             return dataset.imgs[idx][1]
         else:
-            img_name_A = os.path.join('/scratch/shubodh/places365/rapyuta4_classes/train_all/', self.landmarks.iloc[idx, 0])
-            label = self.landmarks.iloc[idx, 1] 
+            #img_name_A = os.path.join('/scratch/shubodh/places365/rapyuta4_classes/train_all/', self.landmarks.iloc[idx, 0])
+            label = self.landmarks.iloc[idx, 1]
             #print(img_name_A, label)
-            return (label)
+            label_all = self.landmarks.iloc[:,1]
+            label_all_np = np.array(label_all)
+            new_len = len(self.landmarks) - self.sequence_length + 1
+           
+            label_all_seq = np.zeros((new_len,20))
+
+            for i in range(new_len):
+                label_all_seq[i] = label_all_np[i:i+20]
+                
+            #freq_label = np.array(mode(label_all_seq.T))[0,:]
+            #freq_label_final = freq_label.T.flatten()
+            
+            freq_label = label_all_seq[:,9]
+            freq_label_final = freq_label.flatten()
+            print "label{}".format(freq_label_final[idx])
+            print "idx{}".format(idx)
+            return (freq_label_final[idx])
                 
     def __iter__(self):
         return (self.indices[i] for i in torch.multinomial(
@@ -406,21 +456,31 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         return self.num_samples
 
 class GetDataset(Dataset):
-    def __init__(self, csv_file, root_dir, transform=None):
+    def __init__(self, csv_file, root_dir, sequence_length, transform=None):
         self.root_dir = root_dir
         self.transform = transform
         self.landmarks = pd.read_csv(csv_file)
-        self.inp = np.load(root_dir + 'train_feature_vector_1.npy')
+        self.sequence_length = sequence_length
+        self.inpa = np.load(root_dir + 'train_input_feature_21200x20x512_satyajit_model.npy')
 
     def __len__(self):
-        return len(self.landmarks)
+        return (len(self.landmarks) - self.sequence_length + 1)
 
     def __getitem__(self, idx):
         #img_name_A = os.path.join(self.root_dir, self.landmarks.iloc[idx, 0])
         label = self.landmarks.iloc[idx, 1] 
-        #print(self.landmarks.iloc[idx, 0], label)
-        #time.sleep(1)
-        return (self.inp[idx], label)
+        label_all = self.landmarks.iloc[:,1]
+        label_all_np = np.array(label_all)
+        #print label_all_np.shape
+        new_len = len(self.landmarks) - self.sequence_length + 1
+       
+        label_all_seq = np.zeros((new_len,20))
+
+        for i in range(new_len):
+            label_all_seq[i] = label_all_np[i:i+20]
+
+        return (self.inpa[idx], label_all_seq[idx])
+
 
 class GetTestDataset(Dataset):
     def __init__(self, csv_file, root_dir, sequence_length, transform=None):
@@ -428,7 +488,25 @@ class GetTestDataset(Dataset):
         self.transform = transform
         self.landmarks = pd.read_csv(csv_file)
         self.sequence_length = sequence_length
-        self.inpa = np.load(root_dir + 'test_input_feature_8400X20X512_1july.npy')
+        self.inpa = np.load(root_dir + 'test_input_feature_8400x20x512_satyajit_model.npy')
+        self.rand = np.zeros([8419,512])
+
+    def __len__(self):
+        return len(self.landmarks)
+
+    def __getitem__(self, idx):
+       # img_name_A = os.path.join(self.root_dir, self.landmarks.iloc[idx, 0])
+        label = self.landmarks.iloc[idx, 1] 
+
+        return (self.rand[idx], label)
+
+class GetTempTestDataset(Dataset):
+    def __init__(self, csv_file, root_dir, sequence_length, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.landmarks = pd.read_csv(csv_file)
+        self.sequence_length = sequence_length
+        self.inpa = np.load(root_dir + 'test_input_feature_8400x20x512_satyajit_model.npy')
 
     def __len__(self):
         return (len(self.landmarks) - self.sequence_length + 1)

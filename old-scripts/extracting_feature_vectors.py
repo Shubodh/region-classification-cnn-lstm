@@ -28,7 +28,7 @@ from PIL import Image
 
 
 # Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # Hyper-parameters
@@ -52,19 +52,22 @@ resnet18 = 'resnet18'
 
 def main():
     global best_prec1, lr_all, lr_fc
-    model_resnet18 = torchvision.models.resnet18(num_classes=4)
-    model_resnet18 = torch.nn.DataParallel(model_resnet18).cuda()
-
-    #checkpoint = torch.load("/home/shubodh/places365_training/places365/trained_models_places10_phase1/resnet18_best_phase1_4classes_unfrozen.pth.tar") satyajit_models/jun20_rc_final_rapyuta_satyajit.pt
-    checkpoint = torch.load("/home/shubodh/places365_training/trained_models/trained_models_rapyuta4_phase2/resnet18_best_phase2_unfrozen_may25.pth.tar")
-    start_epoch = checkpoint['epoch']
-    best_prec = checkpoint['best_prec1']
-
-    model_resnet18.load_state_dict(checkpoint['state_dict'])
-    #num_ftrs = model_resnet18.module.fc.in_features
-    model_resnet18.module.fc = Identity()
-    model_resnet18.cuda()
-    cudnn.benchmark = True
+#    model_resnet18 = torchvision.models.resnet18(num_classes=4)
+#    model_resnet18 = torch.nn.DataParallel(model_resnet18).cuda()
+#
+#    #checkpoint = torch.load("/home/shubodh/places365_training/places365/trained_models_places10_phase1/resnet18_best_phase1_4classes_unfrozen.pth.tar") 
+#    checkpoint = torch.load("/home/shubodh/places365_training/trained_models/trained_models_rapyuta4_phase2/resnet18_best_phase2_unfrozen_may25.pth.tar")
+    MPObj = torch.load("/home/shubodh/places365_training/trained_models/satyajit_models/jun20_rc_final_rapyuta_satyajit.pt").cuda()
+    MPObj.lin = Identity()
+    print MPObj.state_dict()
+#    start_epoch = checkpoint['epoch']
+#    best_prec = checkpoint['best_prec1']
+#
+#    model_resnet18.load_state_dict(checkpoint['state_dict'])
+#    #num_ftrs = model_resnet18.module.fc.in_features
+#    model_resnet18.module.fc = Identity()
+#    model_resnet18.cuda()
+#    cudnn.benchmark = True
     
 
     train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all.csv', root_dir='/scratch/shubodh/places365/rapyuta4_classes/train_all/', transform=transform)
@@ -74,16 +77,10 @@ def main():
     #dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
     val_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
 
-    
     #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
     #criterion = torch.nn.CrossEntropyLoss(weight=w)
-   
 
-    model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
-    
-    # Loss and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    #model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device) # Loss and optimizer #criterion = nn.CrossEntropyLoss() #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     total_step = len(train_loader)
     temp_array = []
     save_array = []
@@ -287,6 +284,29 @@ class Identity(nn.Module):
     def forward(self, x):
         return x
 
+
+class RC(torch.nn.Module):
+    def __init__(self):
+        super(RC, self).__init__()
+        
+        self.resnetX = list(torchvision.models.resnet18(pretrained=True).cuda().children())[:9]
+        cnt_true = 0
+        cnt_false = 0
+        
+        '''
+        for x in self.resnetX:
+            for params in x.parameters():
+                params.requires_grad = False
+        #print(cnt_true, cnt_false)
+        '''
+        self.modelA = torch.nn.Sequential(*self.resnetX)
+        self.lin = torch.nn.Linear(512, 4)
+        
+    def forward(self, x):
+        x = self.modelA(x)
+        x = x.view(-1, 512)
+        x = self.lin(x)
+        return x
 
 # Many to Many LSTM  
 class LSTM(nn.Module):
