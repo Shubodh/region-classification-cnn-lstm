@@ -1,2 +1,4 @@
-npy/
+./logs/
+./npy/
 *.ckpt
+./ckpt/

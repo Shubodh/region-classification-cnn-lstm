@@ -15,7 +15,7 @@ import torchvision
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-#from logger import Logger
+from logger import Logger
 
 from sklearn.metrics import confusion_matrix 
 from sklearn.metrics import accuracy_score 
@@ -29,6 +29,9 @@ from PIL import Image
 
 from scipy.stats import mode 
 
+logger_train = Logger('./logs/train_13jul')
+logger_val = Logger('./logs/val_13jul')
+
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
@@ -41,9 +44,10 @@ hidden_size = 128
 num_layers = 1
 num_classes = 4 
 batch_size = 100
-num_epochs = 5
-learning_rate = 0.01
+num_epochs = 1000
+learning_rate = 0.001
 
+best_prec1 = 0
 
 transform = transforms.Compose(transforms.ToTensor())
 
@@ -53,73 +57,130 @@ resnet18 = 'resnet18'
 #logger_val = Logger('./logs_unfrozen/val_lr_0.001_0.0001')
 
 def main():
-    global best_prec1, lr_all, lr_fc
+    global best_prec1
     
 
     train_dataset = GetDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21219.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
     test_temp_dataset = GetTempTestDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
     test_dataset = GetTestDataset(csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/test_8419.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length, transform=transform)
 
+    #train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, sampler= ImbalancedDatasetSampler(train_dataset, csv_file='/scratch/shubodh/places365/rapyuta4_classes/csv_data_labels/train_all_21219.csv', root_dir='/home/shubodh/places365_training/region-classification-cnn-lstm/npy/', sequence_length=sequence_length), shuffle=False, num_workers=4)
-    #dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
     val_temp_loader = DataLoader(dataset=test_temp_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     val_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-#    ab = 0
-#    for images, labels in val_loader:
-#        #output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
-#        #print "output resnet shape {}".format(output_resnet.shape)
-#        #labels = labels.to(device)
-#        print "labels {}".format(labels)
-#        print ab
-#        ab += 1
-    
-    #w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
-    #criterion = torch.nn.CrossEntropyLoss(weight=w)
-   
-#
-    model = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    model = BiLSTM(input_size, hidden_size, num_layers, num_classes).to(device)
     
     # Loss and optimizer
-    criterion = nn.CrossEntropyLoss()
+    w = torch.Tensor([0.46,0.56,5.42,4.69]).cuda()
+    criterion = nn.CrossEntropyLoss(weight=w)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     total_step = len(train_loader)
     for epoch in range(num_epochs):
         #adjust_learning_rate(optimizer, epoch)
         #learning rate decay every 30 epochs
         #lr_all = lr_all * (0.1 ** ((epoch - 115) // 30))
-       
-        for i, (images, labels) in enumerate(train_loader):
-            # train for one epoch
-            labels = labels.to(device)
-            labels = labels.long()
-            #print "input shape before {}".format(input_var.shape)
-            
-            # compute output
-            output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
-            output_resnet = output_resnet.float()
-            print "output_resnet shape train: {}".format(output_resnet.shape)
-            # Forward pass LSTM
-            outputs = model(output_resnet)
-            outputs = outputs.permute(0,2,1)
-            #print "outputs shape {}".format(outputs.shape)
-            loss = criterion(outputs, labels)
+        train(train_loader, model, criterion, optimizer, epoch)
 
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # Optimizer
-            optimizer.step()
-            
-            if (i+1) % 1 == 0:
-                print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}' 
-                       .format(epoch+1, num_epochs, i+1, total_step, loss.item()))
-    #model_saved = LSTM(input_size, hidden_size, num_layers, num_classes).to(device)
-    #model_saved.load_state_dict(torch.load("./model_many_to_many_lstm.ckpt"))
-    #model_saved.load_state_dict(torch.load("./model_many_to_many_lstm_5epochs_satya.ckpt", map_location=lambda storage, loc: storage))
-#    
-    # Test the model
+        prec1 = validate(val_loader, val_temp_loader, model, criterion, epoch)
+        
+#    # Save the model checkpoint
+#    torch.save(model.state_dict(), 'model_many_to_many_lstm_5epochs_finale_weighted_loss.ckpt')
+#        if (epoch + 1 == 3) or ((epoch+1)%5 == 0):
+#            torch.save(model.state_dict(), str(epoch + 1) + '_model_many_to_many_lstm_finale.ckpt')
+#            print ("model checkpoint {} saved".format(epoch+1))
+
+        # remember best prec@1 and save checkpoint
+        is_best = prec1 > best_prec1
+        best_prec1 = max(prec1, best_prec1)
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'state_dict': model.state_dict(),
+            'best_prec1': best_prec1,
+        }, is_best, "13July_a_")
+
+
+    #model_saved = BiLSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    #model_saved.load_state_dict(torch.load("./10_model_many_to_many_lstm_finale.ckpt", map_location=lambda storage, loc: storage))   
+
+
+#
+
+def train(train_loader, model, criterion, optimizer, epoch):
+
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top3 = AverageMeter()
+
+    end = time.time()
+
+    for i, (images, labels) in enumerate(train_loader):
+        # measure data loading time
+        data_time.update(time.time() - end)
+        
+        # train for one epoch
+        labels = labels.to(device)
+        labels = labels.long()
+        
+        # compute output
+        output_resnet = images.reshape(-1, sequence_length, input_size).to(device)
+        output_resnet = output_resnet.float()
+        
+        # Forward pass LSTM
+        outputs = model(output_resnet)
+        outputs = outputs.permute(0,2,1)
+        loss = criterion(outputs, labels)
+        # measure accuracy and record loss
+        prec1, prec3 = accuracy(outputs.permute(0,2,1).view(batch_size*sequence_length,4).data, labels.view(batch_size*sequence_length), topk=(1, 3))
+        losses.update(loss.item(), images.size(0))
+        top1.update(prec1.item(), images.size(0))
+        top3.update(prec3.item(), images.size(0))
+
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        
+        # Optimizer
+        optimizer.step()
+        
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+        
+        if (i+1) % 10 == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                  'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
+                   epoch+1, i+1, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses, top1=top1, top3=top3))
+
+
+    # TENSORBOARD LOGGING
+    # 1. Log scalar values (scalar summary)
+    info = { 'loss': losses.avg, 'accuracy': top1.avg }
+
+    for tag, value in info.items():
+        logger_train.scalar_summary(tag, value, epoch)
+
+    # 2. Log values and gradients of the parameters (histogram summary)
+    for tag, value in model.named_parameters():
+        tag = tag.replace('.', '/')
+        logger_train.histo_summary(tag, value.data.cpu().numpy(), epoch)
+        logger_train.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch)
+
+
+def validate(val_loader, val_temp_loader, model, criterion, epoch):
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top3 = AverageMeter()
+    end = time.time()
+    
     with torch.no_grad():
         output_vector = np.zeros([8400,20,4])
         out_i = 0
@@ -135,7 +196,7 @@ def main():
             outputs_np = outputs.data.cpu().numpy()
             output_vector[out_i*100:((out_i+1)*100),:,:] = outputs_np[:,:,:]
             #print " output vector {}shape {} ".format(output_vector, output_vector.shape)
-            print out_i
+            #print out_i
             out_i += 1
             
         output_vector_indi = np.zeros([8419,20,4])
@@ -148,12 +209,9 @@ def main():
         #print "output_vector_indi ending{}".format(output_vector_indi[8417:8419,:,:])
         
         output_vector_final = np.average(output_vector_indi, axis=1)
-        print "output_vector_final {}".format(output_vector_final.shape)
        
         output_final = torch.from_numpy(output_vector_final)
         output_final = output_final.to(device)
-        correct = 0
-        total = 0
         pre_i = 0
         true_list = np.array([])
         pred_list = np.array([])
@@ -163,171 +221,49 @@ def main():
             #print "labels {}".format(labels)
             labels = labels.to(device)
             labels = labels.long()
-            total += (labels.size(0))
+            #loss = criterion(output_final[pre_i*100:((pre_i+1)*100)].double(), labels)
             #predicted = predicted.long()
-            correct += (predicted[pre_i*100:((pre_i+1)*100)] == labels).sum().item()
 
             labels_temp = np.asarray(labels.data.cpu().numpy())
             true_list = np.append(true_list, labels_temp)
             pred_list = np.append(pred_list, predicted[pre_i*100:((pre_i+1)*100)].cpu().numpy())
 
-            pre_i += 1
-
-        torch.save(model.state_dict(), 'model_many_to_many_lstm_5epochs_finale.ckpt')
-
-        print "correct {}".format(correct)
-        print "total {}".format(total)
-        print('Test Accuracy of the model on the test images: {} %'.format(100 * correct / total)) 
-
-        print('Confusion matrix: ')
-        print confusion_matrix(true_list, pred_list)
-        print('Accuracy score: ', accuracy_score(true_list, pred_list))
-        print(classification_report(true_list,pred_list))
-
-
-#
-#    # Save the model checkpoint
-   # torch.save(model.state_dict(), 'model_many_to_many_lstm_5epochs_finale.ckpt')
-
-def train(train_loader, model, criterion, optimizer, epoch):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top3 = AverageMeter()
-
-    # switch to train mode
-    model.train()
-
-    end = time.time()
-    for i, (input, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
-
-        target = target.cuda(async=True)
-        input_var = torch.autograd.Variable(input)
-        target_var = torch.autograd.Variable(target)
-        # compute output
-        output = model(input_var)
-        loss = criterion(output, target_var)
-        
-        # measure accuracy and record loss
-        prec1, prec3 = accuracy(output.data, target, topk=(1, 3))
-        losses.update(loss.item(), input.size(0))
-        top1.update(prec1.item(), input.size(0))
-        top3.update(prec3.item(), input.size(0))
-        
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % 10 == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1, top3=top3))
-
-        
-        
-    # TENSORBOARD LOGGING
-    # 1. Log scalar values (scalar summary)
-    info = { 'loss': losses.avg, 'accuracy': top1.avg }
-
-    for tag, value in info.items():
-        logger_train.scalar_summary(tag, value, epoch)
-
-    # 2. Log values and gradients of the parameters (histogram summary)
-    for tag, value in model.named_parameters():
-        tag = tag.replace('.', '/')
-        logger_train.histo_summary(tag, value.data.cpu().numpy(), epoch)
-        logger_train.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch)
-
-    # 3. Log training images (image summary)
-    info = { 'train_images': input_var.view(-1, 28, 28)[:10].cpu().numpy() }
-
-    for tag, input_var in info.items():
-        logger_train.image_summary(tag, input_var, epoch) 
-
-
-def validate(val_loader, model, criterion, epoch):
-    batch_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top3 = AverageMeter()
-    true_list = np.array([])
-    pred_list = np.array([])
-    # switch to evaluate mode
-    model.eval()
-
-    end = time.time()
-    with torch.no_grad():
-        for i, (input, target) in enumerate(val_loader):
-            target = target.cuda(async=True)
-            input_var = torch.autograd.Variable(input)
-            target_var = torch.autograd.Variable(target)
+            #print ("big {} predicted {}, labels {}".format(output_final.data.shape, output_final.data[pre_i*100:((pre_i+1)*100)].shape, labels.shape))  
+            prec1, prec3 = accuracy(output_final[pre_i*100:((pre_i+1)*100)], labels, topk=(1, 3))
+            #losses.update(loss.item(), images.size(0))
+            top1.update(prec1.item(), images.size(0))
+            top3.update(prec3.item(), images.size(0))
             
-            target_ew = torch.autograd.Variable(target.squeeze()).cuda()
-            #print(target_ew.size())
-            # compute output
-            output = model(input_var)
-            loss = criterion(output, target_var)
-            # adding custom validation metrics from sklearn
-            target_ew_np = np.asarray(target_ew.data.cpu().numpy())
-            #print target_ew_np
-            true_list = np.append(true_list, target_ew_np)
-            #print true_list
-            _, pred_label_value = torch.max(output, 1)
-            #print(pred_label_value.size())
-            pred_list = np.append(pred_list, pred_label_value.cpu().numpy())
-            #print(pred_list)
-#            print("the length of pred list is {pred}".format(pred = len(pred_list)))
-            # measure accuracy and record loss
-            prec1, prec3 = accuracy(output.data, target, topk=(1, 3))
-            losses.update(loss.item(), input.size(0))
-            top1.update(prec1.item(), input.size(0))
-            top3.update(prec3.item(), input.size(0))
-            
-                        
-
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+            
+            pre_i += 1
 
-            if i % 10  == 0:
+            if (i+1) % 10  == 0:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+             #         'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                       'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                       'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
+                       i, len(val_loader), batch_time=batch_time,
                        top1=top1, top3=top3))
-
 
 
     # TENSORBOARD LOGGING
     # 1. Log scalar values (scalar summary)
-    info = { 'loss': losses.avg, 'accuracy': top1.avg }
+    info = { 'accuracy': top1.avg }
 
     for tag, value in info.items():
         logger_val.scalar_summary(tag, value, epoch)
 
-    print(' * Prec@1 {top1.avg:.3f} Prec@3 {top3.avg:.3f}'
-          .format(top1=top1, top3=top3))
-   # accuracy score, confusion_matrix and classification report from sklearn
+
     print('Confusion matrix: ')
     print confusion_matrix(true_list, pred_list)
     print('Accuracy score: ', accuracy_score(true_list, pred_list))
     print(classification_report(true_list,pred_list))
 
+    
     return top1.avg
 
 
@@ -337,7 +273,6 @@ class Identity(nn.Module):
         
     def forward(self, x):
         return x
-
 
 # Many to Many LSTM  
 class LSTM(nn.Module):
@@ -352,6 +287,27 @@ class LSTM(nn.Module):
         # Set initial hidden and cell states 
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device) 
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+
+        # Forward propagate LSTM. ht = f(W1 * (h(t-1),x(t)))
+        out, _ = self.lstm(x, (h0, c0))  
+
+        # Last fc layer of all time steps. yt = W2 * ht
+        out = self.fc(out[:, :, :]) 
+        return out
+
+# Many to Many Bidirectional LSTM  
+class BiLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes):
+        super(BiLSTM, self).__init__()
+        self.hidden_size = hidden_size 
+        self.num_layers = num_layers 
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True) 
+        self.fc = nn.Linear(hidden_size*2, num_classes) 
+    
+    def forward(self, x):
+        # Set initial hidden and cell states 
+        h0 = torch.zeros(self.num_layers*2, x.size(0), self.hidden_size).to(device) 
+        c0 = torch.zeros(self.num_layers*2, x.size(0), self.hidden_size).to(device)
 
         # Forward propagate LSTM. ht = f(W1 * (h(t-1),x(t)))
         out, _ = self.lstm(x, (h0, c0))  
@@ -439,13 +395,13 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
             for i in range(new_len):
                 label_all_seq[i] = label_all_np[i:i+20]
                 
-            #freq_label = np.array(mode(label_all_seq.T))[0,:]
-            #freq_label_final = freq_label.T.flatten()
+            freq_label = np.array(mode(label_all_seq.T))[0,:]
+            freq_label_final = freq_label.T.flatten()
             
-            freq_label = label_all_seq[:,9]
-            freq_label_final = freq_label.flatten()
-            print "label{}".format(freq_label_final[idx])
-            print "idx{}".format(idx)
+            #freq_label = label_all_seq[:,9]
+            #freq_label_final = freq_label.flatten()
+            #print "label{}".format(freq_label_final[idx])
+            #print "idx{}".format(idx)
             return (freq_label_final[idx])
                 
     def __iter__(self):
@@ -489,7 +445,7 @@ class GetTestDataset(Dataset):
         self.landmarks = pd.read_csv(csv_file)
         self.sequence_length = sequence_length
         self.inpa = np.load(root_dir + 'test_input_feature_8400x20x512_satyajit_model.npy')
-        self.rand = np.zeros([8419,512])
+        self.rand = np.zeros([8419,512])#only care about labels here. Not inputs.
 
     def __len__(self):
         return len(self.landmarks)
@@ -541,10 +497,10 @@ def adjust_learning_rate(optimizer, epoch):
 
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename + '_latest.pth.tar')
+def save_checkpoint(state, is_best, filename='checkpoint.ckpt'):
+    torch.save(state, filename  + '_latest.ckpt')
     if is_best:
-        shutil.copyfile(filename + '_latest.pth.tar', filename + '_best.pth.tar')
+        shutil.copyfile(filename + '_latest.ckpt', filename + '_best.ckpt')
  
 def calculateTotalLoss(targ, preda):
    
